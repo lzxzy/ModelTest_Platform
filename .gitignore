@@ -7,9 +7,9 @@ __pycache__/
 *.so
 
 # Dataset & Model result
-datastes/
-result/
-runs/
+datasets
+result
+runs
 
 
 # Distribution / packaging
