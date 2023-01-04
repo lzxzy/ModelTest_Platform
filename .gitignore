@@ -3,6 +3,16 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# custome
+*.gz
+*.tar*
+
+# torch model file 
+*.pt
+*.pth
+# dataset
+Jupyter/ddp/data
+
 # C extensions
 *.so
 
