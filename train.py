@@ -1,42 +1,32 @@
 import argparse
-from ast import parse
-import csv
-import enum
-import modulefinder
-from operator import mod
 import os
 import random
-from sched import scheduler
-from statistics import mode
-import sys
-from datetime import datetime
+
 from time import time, strftime, gmtime
-import typing
-from unittest import TestLoader
-from xml.etree.ElementInclude import default_loader
-from cv2 import log
-from nbformat import write
+from xmlrpc.client import TRANSPORT_ERROR
+
 
 import torch
 import torch.nn as nn
-import torch.backends.cudnn as cudnn
 import torch.nn.parallel
 import torch.optim as optim
 import torch.utils.data
 import torch.utils.tensorboard as tb
+# from torchaudio import datasets
+import torchvision.datasets as datasets
 
 import torchvision
 import torchvision.transforms as transforms
-from torch.optim.lr_scheduler import MultiStepLR
+
 from tqdm import trange
 import copy
 import pdb
 
-from uvloop import EventLoopPolicy
 
 from model.mobilenetv2 import MobileNetV2
 from model.shufflenet import ShuffleNet
 from model.shufflenetv2 import ShuffleNetV2
+from model.DeiT import DeiT
 
 torch.manual_seed(0)
 random.seed(0)
@@ -160,15 +150,16 @@ if __name__ == "__main__":
     warnings.filterwarnings('ignore')
     
     parser = argparse.ArgumentParser(description='PyTorch implementation of MobileNetV2')
+    parser.add_argument('--datasets', type=str, default='imagenet')
     parser.add_argument('--data-dir', type=str, default='./datasets')
-    parser.add_argument('--batch-size', type=int, default=32)
-    parser.add_argument('--num-class', type=int, default=100)
-    parser.add_argument('--num-epochs', type=int, default=200)
-    parser.add_argument('--lr', type=float, default=0.045)
-    parser.add_argument('--num-workers', type=int, default=4)
+    parser.add_argument('--batch-size', type=int, default=1024)
+    parser.add_argument('--num-class', type=int, default=1000)
+    parser.add_argument('--num-epochs', type=int, default=300)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--print-freq', type=int, default=50)
     parser.add_argument('--save-epoch-freq', type=int, default=1)
-    parser.add_argument('--save-path', type=str, default='./result/cifar10_shufflenetv2_no_downsample')
+    parser.add_argument('--save-path', type=str, default='./result/DeiT_multiGPU')
     parser.add_argument('--resume', type=str, default='', help='For training from one checkpoint')
     parser.add_argument('--start-epoch', type=int, default=0, help='Corresponding to the epoch of resume')
     args = parser.parse_args()
@@ -186,30 +177,68 @@ if __name__ == "__main__":
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))])
 
-    
-    trainset = torchvision.datasets.CIFAR10(root='./datasets', train=True, download=True, transform=transform_train)
+    if args.datasets == 'cifar10':
+        trainset = torchvision.datasets.CIFAR10(root='./datasets', train=True, download=True, transform=transform_train)
 
-    traindataloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+        traindataloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2)
 
 
-    testset = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True, transform=transform_test)
+        testset = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True, transform=transform_test)
 
-    testdataloader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=True, num_workers=2)
-    
+        testdataloader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+    elif args.datasets == 'imagenet':
+        traindir = os.path.join(args.data_dir, 'train')
+        valdir = os.path.join(args.data_dir, 'val')
+       
+        
+        transform_train = transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))])
+        
+        transform_val = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))])
+        
+        train_dataset = datasets.ImageFolder(
+            traindir,
+            transform_train
+        )
+        
+        val_dataset = datasets.ImageFolder(
+            valdir,
+            transform_val
+        )
+        
+        traindataloader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True
+        )
+        valdataloader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True
+        )
     
     use_gpu = torch.cuda.is_available()
-    print("use_gpu:{}".format(use_gpu))
-    
+    num_gpu = torch.cuda.device_count()
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # model = MobileNetV2(num_classes=10)
     # import pdb
     # pdb.set_trace()
     # model = ShuffleNet(num_classes=10)
-    model = ShuffleNetV2(num_classes=10)
+    # model = ShuffleNetV2(num_classes=10)
+    model = DeiT(num_heads=12)
     
-    if use_gpu:
-        model.to(torch.device('cuda'))
+    if use_gpu and num_gpu>1:
+        print("use_gpu:{}, gpu_num:{}".format(use_gpu, num_gpu))
+        model = nn.DataParallel(model)
+        model.to(device)
+    elif use_gpu:
+        print("use_gpu:{}, gpu_num:{}".format(use_gpu, num_gpu))
+        model.to(device)
     else:
-        model.to(torch.device('cpu'))
+        model.to(device)
         
     criterion = nn.CrossEntropyLoss()
     
@@ -224,6 +253,6 @@ if __name__ == "__main__":
                         scheduler=exp_lr_scheduler,
                         num_epochs=args.num_epochs,
                         train_dataloader=traindataloader,
-                        test_dataloader=testdataloader,
+                        test_dataloader=valdataloader,
                         use_gpu=use_gpu)
     torch.save(model.state_dict(), os.path.join(args.save_path, 'best_model_wts.pth'))
